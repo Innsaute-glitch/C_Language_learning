@@ -4,7 +4,7 @@
 
 int main()
 {
-    printf("The size of int is %d", sizeof(int));
+    printf("The size of int is %d bytes", sizeof(int));
     int var1 = INT_MAX;
     int var2 = INT_MIN;
     printf("\nThe max value is from %d to %d", var1, var2);
