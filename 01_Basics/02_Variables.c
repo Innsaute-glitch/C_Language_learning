@@ -9,7 +9,7 @@ int main(){
     return 0;
 }
 
-Also, you should define multiple variables simuntaneously
+// Also, you should define multiple variables simuntaneously
 int main(){
     int var1, var2, var3;
     var1 = var2 = var3 = 4;
