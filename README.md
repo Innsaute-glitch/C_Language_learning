@@ -14,6 +14,3 @@ You can compile these files using any standard C compiler like GCC.
 gcc filename.c -o output
 ./output
 ```
-
----
-*Happy Coding!*
