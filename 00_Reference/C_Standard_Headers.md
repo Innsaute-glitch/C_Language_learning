@@ -1,14 +1,10 @@
 # 📚 The Complete C Standard Library Header Reference
 
-> A deep-dive guide to every standard C header (C89 → C23), with definitions,
-> function signatures, format tables, and copy-paste-ready examples.
+> A deep-dive guide to every standard C header (C89 → C23), with definitions, function signatures, format tables, and copy-paste-ready examples.
 >
-> Compile note for Linux/macOS users: anything from `<math.h>` needs `-lm`
-> (e.g. `gcc main.c -o main -lm`). On Windows (MSVC / MinGW) it links automatically.
+> Compile note for Linux/macOS users: anything from `<math.h>` needs `-lm` (e.g. `gcc main.c -o main -lm`). On Windows (MSVC / MinGW) it links automatically.
 >
-> **New to C?** Read [section 1](#preliminaries) fully, then jump straight to
-> [`<stdio.h>`](#stdioh) and [`<stdlib.h>`](#stdlibh). Ignore everything from
-> section 15 onward until you finish loops, functions, arrays and pointers.
+> **New to C?** Read [section 1](#preliminaries) fully, then jump straight to [`<stdio.h>`](#stdioh) and [`<stdlib.h>`](#stdlibh). Ignore everything from section 15 onward until you finish loops, functions, arrays and pointers.
 
 ---
 
@@ -56,8 +52,7 @@ A header file (`.h`) is **not** compiled code. It contains:
 #include "mylib.h"   // quotes       = search your project dir first
 ```
 
-That's why you can call `printf()` without writing it yourself — the compiler
-reads its prototype from `<stdio.h>`, and the linker finds its code in libc.
+That's why you can call `printf()` without writing it yourself — the compiler reads its prototype from `<stdio.h>`, and the linker finds its code in libc.
 
 ### 1.1 How to read this guide
 
@@ -472,8 +467,7 @@ EXIT_SUCCESS / EXIT_FAILURE        // portable exit codes
 <a id="stringh"></a>
 ## 4. `<string.h>` — String Handling & Memory Blocks
 
-Remember: a C "string" is just a `char` array ending with the `'\0'` terminator.
-These functions trust that convention completely.
+Remember: a C "string" is just a `char` array ending with the `'\0'` terminator. These functions trust that convention completely.
 
 ### 4.1 Length & copy
 
@@ -749,8 +743,7 @@ if (fabs(a - b) <= DBL_EPSILON * fabs(a))   // "close enough"
 <a id="stdint-inttypes"></a>
 ## 8. `<stdint.h>` & `<inttypes.h>` — Fixed-Width Integers (C99)
 
-`int` size varies by platform (usually 32-bit, but 16-bit on old systems).
-When you need EXACT widths (file formats, protocols, embedded):
+`int` size varies by platform (usually 32-bit, but 16-bit on old systems). When you need EXACT widths (file formats, protocols, embedded):
 
 ### Exact-width types
 
@@ -772,7 +765,8 @@ When you need EXACT widths (file formats, protocols, embedded):
 
 ### `<inttypes.h>` — printing them portably
 
-You can't use `%d` for `int32_t` reliably (it might be `long` somewhere). So:
+You can't use `%d` for `int32_t` reliably (it might be `long` somewhere).
+So:
 
 ```c
 #include <inttypes.h>
@@ -993,8 +987,7 @@ wall-clock time. For sub-millisecond wall timing, use platform APIs
 void assert(int expression);
 ```
 
-If the expression is false (0), the program prints the failing expression, file,
-and line to stderr, then aborts. It's a debugging tripwire, not error handling.
+If the expression is false (0), the program prints the failing expression, file, and line to stderr, then aborts. It's a debugging tripwire, not error handling.
 
 ```c
 #include <assert.h>
@@ -1108,10 +1101,8 @@ int main(void) {
 
 Rules & dangers:
 - At least one **named** parameter required (that's why `printf(fmt, ...)`).
-- `va_arg` performs **default argument promotions**: `char`/`short` arrive as `int`,
-  `float` arrives as `double`. Ask for `int`/`double`, never `char`/`float`.
-- There is NO way to know arg count or types at runtime — you need a convention
-  (like printf's format string) or you'll read garbage.
+- `va_arg` performs **default argument promotions**: `char`/`short` arrive as `int`, `float` arrives as `double`. Ask for `int`/`double`, never `char`/`float`.
+- There is NO way to know arg count or types at runtime — you need a convention (like printf's format string) or you'll read garbage.
 
 ---
 
@@ -1210,8 +1201,7 @@ e.g. `signal(SIGINT, SIG_IGN);` makes Ctrl+C do nothing.
 <a id="localeh"></a>
 ## 17. `<locale.h>` — Localization
 
-Adapts formatting to regional conventions (decimal comma, currency symbols,
-month names in other languages).
+Adapts formatting to regional conventions (decimal comma, currency symbols, month names in other languages).
 
 ```c
 char *setlocale(int category, const char *name);
@@ -1240,8 +1230,7 @@ int main(void) {
 }
 ```
 
-Default state is the minimal `"C"` locale — pure ASCII English. Without calling
-`setlocale`, nothing ever changes.
+Default state is the minimal `"C"` locale — pure ASCII English. Without calling `setlocale`, nothing ever changes.
 
 ---
 
@@ -1311,8 +1300,7 @@ size_t mbrtoc16(char16_t *pc16, const char *s, size_t n, mbstate_t *ps);
 // converts multibyte (UTF-8) sequence → UTF-16, and c16rtomb goes back
 ```
 
-Practical advice for learners: stick with plain `char` + UTF-8 for now; reach
-for `wchar_t` mainly on Windows where the OS API (`CreateFileW` etc.) uses UTF-16.
+Practical advice for learners: stick with plain `char` + UTF-8 for now; reach for `wchar_t` mainly on Windows where the OS API (`CreateFileW` etc.) uses UTF-16.
 
 ---
 
@@ -1331,13 +1319,11 @@ printf("real=%f imag=%f\n", creal(z), cimag(z));
 double complex w = cexp(I * 3.14159);  // e^{iπ} ≈ -1 (Euler!)
 ```
 
-Functions mirror `<math.h>` with a `c` prefix: `csqrt`, `cpow`, `csin`, `clog`,
-`cabs`, `carg` (angle). Types: `float complex`, `double complex`, `long double complex`.
+Functions mirror `<math.h>` with a `c` prefix: `csqrt`, `cpow`, `csin`, `clog`, `cabs`, `carg` (angle). Types: `float complex`, `double complex`, `long double complex`.
 
 ### `<fenv.h>` — floating-point environment
 
-Controls rounding mode and detects FP exceptions (overflow, divide-by-zero)
-without trapping:
+Controls rounding mode and detects FP exceptions (overflow, divide-by-zero) without trapping:
 
 ```c
 #include <fenv.h>
@@ -1390,8 +1376,7 @@ noreturn void fatal_error(const char *msg) {   // promises: never comes back
 }
 ```
 
-Helps compilers optimize/warn. All three headers are obsolete in **C23**
-(their macros became real keywords).
+Helps compilers optimize/warn. All three headers are obsolete in **C23** (their macros became real keywords).
 
 ---
 
@@ -1423,9 +1408,7 @@ int main(void) {
 }
 ```
 
-Key functions: `thrd_create`, `thrd_join`, `thrd_detach`, `thrd_sleep`,
-`mtx_init/lock/unlock/destroy` (mutexes), `cnd_init/wait/signal/broadcast`
-(condition variables), `tss_create/get/set` (thread-local storage).
+Key functions: `thrd_create`, `thrd_join`, `thrd_detach`, `thrd_sleep`, `mtx_init/lock/unlock/destroy` (mutexes), `cnd_init/wait/signal/broadcast`(condition variables), `tss_create/get/set` (thread-local storage).
 
 ### `<stdatomic.h>` — lock-free atomic operations
 
@@ -1441,9 +1424,7 @@ atomic_store(&counter, 10);
 atomic_compare_exchange_strong(&counter, &expected, newval);  // CAS
 ```
 
-Memory ordering parameters (`memory_order_relaxed`, `acquire`, `release`,
-`seq_cst` default) control how visible changes are across threads — a deep topic;
-use the defaults until you study concurrency formally.
+Memory ordering parameters (`memory_order_relaxed`, `acquire`, `release`, `seq_cst` default) control how visible changes are across threads — a deep topic; use the defaults until you study concurrency formally.
 
 ---
 
@@ -1479,8 +1460,7 @@ if (ckd_mul(&result, a, 3))
     printf("Multiplication overflowed!\n");
 ```
 
-Also `ckd_sub`. Works on any integer type — invaluable for parsers, allocators,
-and security-sensitive code.
+Also `ckd_sub`. Works on any integer type — invaluable for parsers, allocators, and security-sensitive code.
 
 ---
 
@@ -1566,5 +1546,4 @@ Debugging workflow when something misbehaves:
    the C/C++ extension) and inspect variables step by step.
 
 ---
-*Generated as a personal study reference — pair each section with small practice
-programs in your `01_Basics/` and `02_Conditionals/` folders.*
+*Generated as a personal study reference — pair each section with small practice programs in your `01_Basics/` and `02_Conditionals/` folders.*
