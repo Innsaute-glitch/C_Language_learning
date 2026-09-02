@@ -4450,3 +4450,1351 @@ printf("size=%zu diff=%td\n", sizeof(int), ptr2 - ptr1);
 
 `%lld` for `int64_t` works on most platforms but isn't guaranteed. The `PRI*`
 macros always expand to the correct specifier.
+
+The other macros follow the same pattern: `PRId32`/`PRIu32` for `int32_t`/`uint32_t`, `PRIx64` for hex output of a `uint64_t`, `PRIX64` for uppercase hex, and `SCNd64`-style macros for `scanf`. When in doubt, use the macro — it's one less portability landmine.
+
+---
+
+<a id="building-things"></a>
+# Part IV — Building Things
+
+Everything so far has been about *using* C correctly. This part is about *building* with it. Each section implements one real data structure, complete, with the ownership and error-handling discipline from Parts II and III.
+
+These are not toy snippets. They are the actual shapes you will reuse.
+
+---
+
+<a id="vector"></a>
+## 24. Dynamic Array (Vector)
+
+A growable array. The single most-used data structure in C — it replaces the fixed `int arr[N]` that silently overflows.
+
+### 24.1 The idea
+
+Keep three things: a heap pointer, the number of elements in use, and the allocated capacity. When a push would exceed capacity, grow by doubling. Doubling makes each push O(1) *amortized* — the occasional expensive reallocation is paid for by many cheap ones.
+
+### 24.2 Complete implementation
+
+```c
+/* vec.h */
+#ifndef VEC_H
+#define VEC_H
+
+#include <stddef.h>
+#include <stdbool.h>
+
+typedef struct {
+    int   *data;
+    size_t len;
+    size_t cap;
+} Vec;
+
+/* All functions return bool: true on success, false on allocation failure.
+ * vec_free is safe on a zeroed or already-freed Vec. */
+void vec_init(Vec *v);
+bool vec_push(Vec *v, int x);
+bool vec_pop(Vec *v, int *out);
+int  vec_get(const Vec *v, size_t i);          /* caller must check i < v->len */
+void vec_free(Vec *v);
+
+#endif
+```
+
+```c
+/* vec.c */
+#include "vec.h"
+#include <stdlib.h>
+
+void vec_init(Vec *v) {
+    v->data = NULL;
+    v->len  = 0;
+    v->cap  = 0;
+}
+
+bool vec_push(Vec *v, int x) {
+    if (v->len == v->cap) {
+        size_t new_cap = v->cap ? v->cap * 2 : 8;
+        int *tmp = realloc(v->data, new_cap * sizeof *tmp);
+        if (!tmp) return false;          /* v is unchanged, still valid */
+        v->data = tmp;
+        v->cap  = new_cap;
+    }
+    v->data[v->len++] = x;
+    return true;
+}
+
+bool vec_pop(Vec *v, int *out) {
+    if (v->len == 0) return false;
+    if (out) *out = v->data[--v->len];
+    return true;
+}
+
+int vec_get(const Vec *v, size_t i) {
+    return v->data[i];          /* no bounds check — documented contract */
+}
+
+void vec_free(Vec *v) {
+    free(v->data);
+    v->data = NULL;
+    v->len = v->cap = 0;
+}
+```
+
+### 24.3 Usage and the important idioms
+
+```c
+#include <stdio.h>
+#include "vec.h"
+
+int main(void) {
+    Vec v;
+    vec_init(&v);
+
+    for (int i = 0; i < 10; i++) {
+        if (!vec_push(&v, i * i)) {
+            fprintf(stderr, "out of memory\n");
+            vec_free(&v);
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i < v.len; i++)
+        printf("%d ", v.data[i]);
+    putchar('\n');                       /* 0 1 4 9 16 25 36 49 64 81 */
+
+    int last;
+    while (vec_pop(&v, &last))
+        printf("popped %d\n", last);
+
+    vec_free(&v);                        /* safe even though already drained */
+    return 0;
+}
+```
+
+Three things to notice:
+
+- **`realloc` into a temporary** (`tmp`), exactly the rule from section 8.4. If we did `v->data = realloc(v->data, ...)` and it failed, we'd leak the old block and corrupt the Vec.
+- **Initial capacity of 0** with `v->cap ? v->cap * 2 : 8` avoids a special case for the first allocation and keeps `vec_init` trivial.
+- **`vec_free` resets to zero state**, so a double-free of the Vec itself is harmless and a use-after-free is a clean NULL-deref rather than silent corruption.
+
+> 🔑 The growth factor of 2 is the standard choice. 1.5 uses less memory; 2 is simpler and what most implementations do. Both are O(1) amortized. Never grow by a constant amount (`cap += 10`) — that makes pushing O(n) and your program quadratic.
+
+---
+
+<a id="linked-list"></a>
+## 25. Linked List
+
+A chain of heap nodes, each pointing to the next. You give up O(1) random access in exchange for O(1) insertion and removal at either end.
+
+### 25.1 Singly linked list
+
+```c
+/* list.h */
+#ifndef LIST_H
+#define LIST_H
+
+#include <stdbool.h>
+
+typedef struct Node {
+    int          value;
+    struct Node *next;
+} Node;
+
+typedef struct {
+    Node *head;
+    Node *tail;              /* kept so push_back is O(1) */
+} List;
+
+void  list_init(List *l);
+bool  list_push_front(List *l, int value);
+bool  list_push_back(List *l, int value);
+bool  list_pop_front(List *l, int *out);
+Node *list_find(List *l, int value);
+bool  list_remove(List *l, int value);   /* removes first match */
+void  list_free(List *l);
+
+#endif
+```
+
+```c
+/* list.c */
+#include "list.h"
+#include <stdlib.h>
+
+void list_init(List *l) {
+    l->head = l->tail = NULL;
+}
+
+bool list_push_front(List *l, int value) {
+    Node *n = malloc(sizeof *n);
+    if (!n) return false;
+    n->value = value;
+    n->next  = l->head;
+    l->head  = n;
+    if (!l->tail) l->tail = n;      /* first element */
+    return true;
+}
+
+bool list_push_back(List *l, int value) {
+    Node *n = malloc(sizeof *n);
+    if (!n) return false;
+    n->value = value;
+    n->next  = NULL;
+    if (l->tail) l->tail->next = n;
+    else         l->head       = n;  /* first element */
+    l->tail = n;
+    return true;
+}
+
+bool list_pop_front(List *l, int *out) {
+    Node *n = l->head;
+    if (!n) return false;
+    if (out) *out = n->value;
+    l->head = n->next;
+    if (!l->head) l->tail = NULL;    /* list is now empty */
+    free(n);
+    return true;
+}
+
+Node *list_find(List *l, int value) {
+    for (Node *n = l->head; n; n = n->next)
+        if (n->value == value) return n;
+    return NULL;
+}
+
+bool list_remove(List *l, int value) {
+    Node **pp = &l->head;            /* pointer-to-pointer: the trick */
+    while (*pp) {
+        if ((*pp)->value == value) {
+            Node *dead = *pp;
+            *pp = dead->next;
+            if (dead == l->tail) l->tail = NULL;  /* tail tracking is the fiddly part */
+            free(dead);
+            return true;
+        }
+        pp = &(*pp)->next;
+    }
+    return false;
+}
+
+void list_free(List *l) {
+    Node *n = l->head;
+    while (n) {
+        Node *next = n->next;
+        free(n);
+        n = next;
+    }
+    l->head = l->tail = NULL;
+}
+```
+
+### 25.2 The pointer-to-pointer trick
+
+`list_remove` uses `Node **pp` — a pointer to the *link* that points at the current node, rather than a pointer to the node itself.
+
+```
+Before removing B:
+    head ──► A ──► B ──► C ──► NULL
+                  ▲
+                  pp = &A->next   (points at the LINK holding B)
+
+*pp = dead->next   rewrites A->next to skip B, without a special case
+```
+
+This removes the "if it's the head, handle differently" branch entirely. Linus Torvalds has called understanding this the mark of someone who actually gets pointers. It's worth drawing on paper until it clicks.
+
+### 25.3 When to use a list vs a vector
+
+| | Vector | Linked list |
+|---|---|---|
+| Random access `v[i]` | O(1) | O(n) |
+| Push/pop at back | O(1) amortized | O(1) with tail pointer |
+| Insert/remove in middle | O(n) (memmove) | O(1) once you have the node |
+| Cache performance | Excellent (contiguous) | Poor (scattered nodes) |
+| Memory per element | `sizeof(int)` | `sizeof(int)` + pointer + malloc overhead |
+
+**Default to a vector.** The cache penalty of pointer-chasing is so severe on modern hardware that a vector often wins even for workloads with many middle insertions. Reach for a list when you need stable pointers to elements (a vector's elements move on realloc) or truly frequent middle insertion.
+
+---
+
+<a id="stack-queue"></a>
+## 26. Stack and Queue
+
+Both are just disciplined uses of a vector or list. The discipline is the point: restricting the interface prevents whole classes of bugs.
+
+### 26.1 Stack (LIFO) on a vector
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct {
+    int   *data;
+    size_t len, cap;
+} Stack;
+
+bool stack_push(Stack *s, int x) {
+    if (s->len == s->cap) {
+        size_t nc = s->cap ? s->cap * 2 : 8;
+        int *tmp = realloc(s->data, nc * sizeof *tmp);
+        if (!tmp) return false;
+        s->data = tmp; s->cap = nc;
+    }
+    s->data[s->len++] = x;
+    return true;
+}
+
+bool stack_pop(Stack *s, int *out) {
+    if (!s->len) return false;
+    if (out) *out = s->data[--s->len];
+    return true;
+}
+
+bool stack_peek(const Stack *s, int *out) {
+    if (!s->len) return false;
+    if (out) *out = s->data[s->len - 1];
+    return true;
+}
+```
+
+The classic application: checking balanced brackets.
+
+```c
+bool brackets_balanced(const char *s) {
+    Stack st = {0};
+    bool ok = true;
+    for (; *s && ok; s++) {
+        switch (*s) {
+            case '(': case '[': case '{':
+                ok = stack_push(&st, *s); break;
+            case ')': case ']': case '}': {
+                int top;
+                ok = stack_pop(&st, &top)
+                     && ((*s == ')' && top == '(')
+                      || (*s == ']' && top == '[')
+                      || (*s == '}' && top == '{'));
+                break;
+            }
+        }
+    }
+    ok = ok && st.len == 0;
+    free(st.data);
+    return ok;
+}
+```
+
+### 26.2 Queue (FIFO) as a ring buffer
+
+A ring buffer uses a fixed array with head and tail indices that wrap around. No allocation after creation, O(1) everything, no memory fragmentation — which is why it appears in every embedded system and audio pipeline.
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct {
+    int   *buf;
+    size_t cap;          /* usable slots are cap - 1; one slot stays empty */
+    size_t head;         /* index of the oldest element */
+    size_t count;
+} Queue;
+
+bool queue_init(Queue *q, size_t capacity) {
+    q->buf = malloc((capacity + 1) * sizeof *q->buf);
+    if (!q->buf) return false;
+    q->cap = capacity + 1;
+    q->head = 0;
+    q->count = 0;
+    return true;
+}
+
+bool queue_push(Queue *q, int x) {
+    if (q->count == q->cap - 1) return false;        /* full */
+    size_t tail = (q->head + q->count) % q->cap;
+    q->buf[tail] = x;
+    q->count++;
+    return true;
+}
+
+bool queue_pop(Queue *q, int *out) {
+    if (!q->count) return false;                      /* empty */
+    if (out) *out = q->buf[q->head];
+    q->head = (q->head + 1) % q->cap;
+    q->count--;
+    return true;
+}
+
+void queue_free(Queue *q) {
+    free(q->buf);
+    q->buf = NULL; q->cap = q->head = q->count = 0;
+}
+```
+
+The `% cap` wrap and the "one empty slot" convention (so full and empty are distinguishable) are the two details people get wrong. `count` disambiguates them here, which is simpler than comparing head and tail.
+
+---
+
+<a id="bst"></a>
+## 27. Binary Search Tree
+
+Each node has at most two children; everything in the left subtree is smaller, everything in the right is larger. Search, insert, and delete are all O(h) where h is the height — O(log n) if the tree stays balanced, degenerating to O(n) if you insert sorted data into a naive tree.
+
+### 27.1 The node and recursive core
+
+```c
+#include <stdbool.h>
+#include <stdlib.h>
+
+typedef struct BstNode {
+    int             key;
+    struct BstNode *left, *right;
+} BstNode;
+
+typedef struct {
+    BstNode *root;
+} Bst;
+
+static BstNode *node_new(int key) {
+    BstNode *n = malloc(sizeof *n);
+    if (n) { n->key = key; n->left = n->right = NULL; }
+    return n;
+}
+
+/* Recursive insert. Returns the (possibly new) subtree root. */
+static BstNode *insert_rec(BstNode *n, int key, bool *inserted) {
+    if (!n) { *inserted = true; return node_new(key); }
+    if (key < n->key)      n->left  = insert_rec(n->left,  key, inserted);
+    else if (key > n->key) n->right = insert_rec(n->right, key, inserted);
+    /* key == n->key: already present, do nothing */
+    return n;
+}
+
+bool bst_insert(Bst *t, int key) {
+    bool inserted = false;
+    BstNode *r = insert_rec(t->root, key, &inserted);
+    if (inserted && !t->root) t->root = r;
+    return inserted;
+}
+
+bool bst_contains(const Bst *t, int key) {
+    const BstNode *n = t->root;
+    while (n) {
+        if (key < n->key)      n = n->left;
+        else if (key > n->key) n = n->right;
+        else                   return true;
+    }
+    return false;
+}
+```
+
+`contains` is iterative (no reason to recurse for a straight walk down); `insert` is recursive because threading the "possibly new subtree root" back up is cleaner than the iterative pointer-to-pointer version for a first implementation.
+
+### 27.2 Traversals
+
+```c
+#include <stdio.h>
+
+static void inorder_rec(const BstNode *n) {
+    if (!n) return;
+    inorder_rec(n->left);
+    printf("%d ", n->key);        /* in-order prints SORTED output */
+    inorder_rec(n->right);
+}
+
+void bst_print_sorted(const Bst *t) {
+    inorder_rec(t->root);
+    putchar('\n');
+}
+```
+
+| Traversal | Order | Use |
+|---|---|---|
+| In-order | left, node, right | Sorted output (BST property) |
+| Pre-order | node, left, right | Copying / serializing a tree |
+| Post-order | left, right, node | Freeing a tree (children before parent) |
+
+### 27.3 Freeing with post-order
+
+```c
+static void free_rec(BstNode *n) {
+    if (!n) return;
+    free_rec(n->left);
+    free_rec(n->right);
+    free(n);                 /* free the parent only after both children */
+}
+
+void bst_free(Bst *t) {
+    free_rec(t->root);
+    t->root = NULL;
+}
+```
+
+> ⚠️ Naive BSTs degenerate into a linked list if you insert already-sorted data, and deep recursion can blow the stack. Production code uses a self-balancing tree (AVL, red-black) or a hash table. For learning and moderate key counts, the plain BST above is honest and instructive.
+
+---
+
+<a id="hashtable"></a>
+## 28. Hash Table
+
+The workhorse. Maps a key to a value in O(1) average time by hashing the key to a bucket index.
+
+### 28.1 The design
+
+- An array of `cap` buckets.
+- Each bucket is the head of a short chain of entries that collided (separate chaining).
+- When `count / cap` exceeds a load factor (0.75), grow the table and rehash.
+
+### 28.2 String keys, int values — complete
+
+```c
+/* ht.h */
+#ifndef HT_H
+#define HT_H
+
+#include <stddef.h>
+#include <stdbool.h>
+
+typedef struct HtEntry {
+    char           *key;
+    int             value;
+    struct HtEntry *next;
+} HtEntry;
+
+typedef struct {
+    HtEntry **buckets;
+    size_t    cap;
+    size_t    count;
+} Ht;
+
+bool ht_init(Ht *t, size_t initial_cap);
+bool ht_set(Ht *t, const char *key, int value);  /* insert or overwrite */
+bool ht_get(const Ht *t, const char *key, int *out);
+bool ht_remove(Ht *t, const char *key);
+void ht_free(Ht *t);
+
+#endif
+```
+
+```c
+/* ht.c */
+#include "ht.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* FNV-1a: simple, fast, good enough for a learning hash table. */
+static size_t hash_str(const char *s) {
+    size_t h = 1469598103934665603ULL;      /* FNV offset basis (64-bit) */
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 1099511628211ULL;              /* FNV prime */
+    }
+    return h;
+}
+
+static char *dup_str(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *copy = malloc(n);
+    if (copy) memcpy(copy, s, n);
+    return copy;
+}
+
+bool ht_init(Ht *t, size_t initial_cap) {
+    if (initial_cap < 8) initial_cap = 8;
+    t->buckets = calloc(initial_cap, sizeof *t->buckets);
+    if (!t->buckets) return false;
+    t->cap   = initial_cap;
+    t->count = 0;
+    return true;
+}
+
+bool ht_get(const Ht *t, const char *key, int *out) {
+    size_t i = hash_str(key) % t->cap;
+    for (HtEntry *e = t->buckets[i]; e; e = e->next) {
+        if (strcmp(e->key, key) == 0) {
+            if (out) *out = e->value;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool grow(Ht *t) {
+    size_t new_cap = t->cap * 2;
+    HtEntry **nb = calloc(new_cap, sizeof *nb);
+    if (!nb) return false;
+
+    /* Rehash every entry into the new bucket array. */
+    for (size_t i = 0; i < t->cap; i++) {
+        HtEntry *e = t->buckets[i];
+        while (e) {
+            HtEntry *next = e->next;
+            size_t j = hash_str(e->key) % new_cap;
+            e->next = nb[j];
+            nb[j]   = e;
+            e = next;
+        }
+    }
+    free(t->buckets);
+    t->buckets = nb;
+    t->cap     = new_cap;
+    return true;
+}
+
+bool ht_set(Ht *t, const char *key, int value) {
+    if ((t->count + 1) * 4 > t->cap * 3) {          /* load factor > 0.75 */
+        if (!grow(t)) return false;                  /* keep going on failure? no — report */
+    }
+
+    size_t i = hash_str(key) % t->cap;
+    for (HtEntry *e = t->buckets[i]; e; e = e->next) {
+        if (strcmp(e->key, key) == 0) {              /* overwrite existing */
+            e->value = value;
+            return true;
+        }
+    }
+
+    HtEntry *e = malloc(sizeof *e);
+    if (!e) return false;
+    e->key = dup_str(key);                           /* table OWNS its copy */
+    if (!e->key) { free(e); return false; }
+    e->value = value;
+    e->next  = t->buckets[i];
+    t->buckets[i] = e;
+    t->count++;
+    return true;
+}
+
+bool ht_remove(Ht *t, const char *key) {
+    size_t i = hash_str(key) % t->cap;
+    HtEntry **pp = &t->buckets[i];                   /* pointer-to-pointer again */
+    while (*pp) {
+        if (strcmp((*pp)->key, key) == 0) {
+            HtEntry *dead = *pp;
+            *pp = dead->next;
+            free(dead->key);
+            free(dead);
+            t->count--;
+            return true;
+        }
+        pp = &(*pp)->next;
+    }
+    return false;
+}
+
+void ht_free(Ht *t) {
+    for (size_t i = 0; i < t->cap; i++) {
+        HtEntry *e = t->buckets[i];
+        while (e) {
+            HtEntry *next = e->next;
+            free(e->key);
+            free(e);
+            e = next;
+        }
+    }
+    free(t->buckets);
+    t->buckets = NULL;
+    t->cap = t->count = 0;
+}
+```
+
+### 28.3 Usage
+
+```c
+#include <stdio.h>
+#include "ht.h"
+
+int main(void) {
+    Ht t;
+    if (!ht_init(&t, 16)) return 1;
+
+    ht_set(&t, "alice", 30);
+    ht_set(&t, "bob",   25);
+    ht_set(&t, "alice", 31);           /* overwrite */
+
+    int age;
+    if (ht_get(&t, "alice", &age)) printf("alice = %d\n", age);   /* 31 */
+    if (!ht_get(&t, "carol", &age)) printf("carol not found\n");
+
+    ht_remove(&t, "bob");
+    ht_free(&t);
+    return 0;
+}
+```
+
+Note the ownership rule: the table **duplicates** every key it stores and frees those copies in `ht_free`/`ht_remove`. The caller's key strings are never kept by reference. That single decision removes the entire category of "the table outlived the string" bugs.
+
+---
+
+<a id="generics"></a>
+## 29. Generic Code with `void *` and Function Pointers
+
+C has no templates. You get genericity through type erasure: store `void *` and hand the container a few function pointers telling it how to compare, copy, and destroy your type.
+
+### 29.1 A generic vector
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    void  *data;
+    size_t len, cap, elem_size;
+} GVec;
+
+bool gvec_init(GVec *v, size_t elem_size) {
+    v->data = NULL;
+    v->len = v->cap = 0;
+    v->elem_size = elem_size;
+    return true;
+}
+
+void *gvec_at(GVec *v, size_t i) {
+    return (char *)v->data + i * v->elem_size;   /* byte arithmetic on void* */
+}
+
+bool gvec_push(GVec *v, const void *elem) {
+    if (v->len == v->cap) {
+        size_t nc = v->cap ? v->cap * 2 : 8;
+        void *tmp = realloc(v->data, nc * v->elem_size);
+        if (!tmp) return false;
+        v->data = tmp; v->cap = nc;
+    }
+    memcpy(gvec_at(v, v->len), elem, v->elem_size);
+    v->len++;
+    return true;
+}
+
+void gvec_free(GVec *v) {
+    free(v->data);
+    v->data = NULL; v->len = v->cap = 0;
+}
+```
+
+Usage with any type:
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    GVec v;
+    gvec_init(&v, sizeof(double));
+
+    for (double x = 0.5; x < 4.0; x *= 2)
+        gvec_push(&v, &x);
+
+    for (size_t i = 0; i < v.len; i++)
+        printf("%.1f ", *(double *)gvec_at(&v, i));
+    putchar('\n');                       /* 0.5 1.0 2.0 */
+
+    gvec_free(&v);
+    return 0;
+}
+```
+
+### 29.2 Generic sort with a comparator
+
+`qsort` from the standard library is exactly this pattern. The comparator contract: return negative if `a < b`, zero if equal, positive if `a > b`.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+static int cmp_int_asc(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);            /* avoids overflow of x - y */
+}
+
+static int cmp_str(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+int main(void) {
+    int nums[] = {5, 2, 8, 1, 9};
+    size_t n = sizeof nums / sizeof nums[0];
+    qsort(nums, n, sizeof *nums, cmp_int_asc);
+
+    const char *names[] = {"carol", "alice", "bob"};
+    size_t m = sizeof names / sizeof names[0];
+    qsort(names, m, sizeof *names, cmp_str);
+
+    for (size_t i = 0; i < n; i++) printf("%d ", nums[i]);
+    putchar('\n');
+    for (size_t i = 0; i < m; i++) printf("%s ", names[i]);
+    putchar('\n');
+    return 0;
+}
+```
+
+The `(x > y) - (x < y)` idiom in `cmp_int_asc` is worth memorizing. The naive `return x - y;` overflows when `x` is very negative and `y` very positive.
+
+For `bsearch` (binary search on a sorted array) the comparator signature is identical.
+
+### 29.3 Callbacks with a context pointer
+
+Real C APIs pass a `void *ctx` through to your callback so it can carry state without globals. This is the pattern behind `qsort_r`, GUI event handlers, and iterator-with-closure designs.
+
+```c
+typedef void (*VisitFn)(void *ctx, int value);
+
+void vec_for_each(const GVec *v, VisitFn fn, void *ctx) {
+    for (size_t i = 0; i < v->len; i++)
+        fn(ctx, *(const int *)gvec_at((GVec *)v, i));
+}
+
+/* ---- caller side ---- */
+#include <stdio.h>
+
+static void print_doubled(void *ctx, int value) {
+    int factor = *(int *)ctx;
+    printf("%d ", value * factor);
+}
+
+int main(void) {
+    GVec v; gvec_init(&v, sizeof(int));
+    for (int i = 1; i <= 5; i++) gvec_push(&v, &i);
+
+    int factor = 10;
+    vec_for_each(&v, print_doubled, &factor);   /* 10 20 30 40 50 */
+
+    gvec_free(&v);
+    return 0;
+}
+```
+
+---
+
+<a id="api-design"></a>
+## 30. API Design: Opaque Types and Modules
+
+The difference between a C library people can use and one they can't is almost entirely the header. A few deliberate choices make a module robust.
+
+### 30.1 The opaque type
+
+Don't expose your struct in the header. Expose only a forward declaration and functions. Callers can hold pointers but can't see inside, so you're free to change the implementation without breaking anyone.
+
+```c
+/* stack.h — the entire public contract */
+#ifndef STACK_H
+#define STACK_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef struct StackImpl Stack;   /* incomplete type: callers can't sizeof it */
+
+Stack *stack_create(void);
+void   stack_destroy(Stack *s);   /* always the mirror of create */
+
+bool   stack_push(Stack *s, int x);
+bool   stack_pop(Stack *s, int *out);
+size_t stack_size(const Stack *s);
+
+#endif
+```
+
+```c
+/* stack.c — the definition is private */
+#include "stack.h"
+#include <stdlib.h>
+
+struct StackImpl {
+    int   *data;
+    size_t len, cap;
+};
+
+Stack *stack_create(void) {
+    Stack *s = calloc(1, sizeof *s);   /* zeroed: data=NULL, len=cap=0 */
+    return s;
+}
+
+void stack_destroy(Stack *s) {
+    if (!s) return;
+    free(s->data);
+    free(s);
+}
+
+/* ... push/pop/size as in section 26, operating on s-> ... */
+```
+
+A caller writes `Stack *s = stack_create();` and can never write `s->len` — the compiler rejects it because `struct StackImpl` is incomplete in their translation unit.
+
+### 30.2 The conventions that make an API feel solid
+
+| Convention | Why |
+|---|---|
+| One prefix per module (`stack_`, `ht_`) | C has no namespaces; the prefix is it |
+| `create`/`destroy` come in pairs | Obvious ownership; ASan verifies the pairing |
+| `destroy(NULL)` is safe | Mirrors `free(NULL)`; removes caller checks |
+| `const` on every read-only pointer param | Self-documenting, enables optimization |
+| Return `bool`/`Status`, output via pointer params | Uniform error handling |
+| Document who owns what, in the header | The whole contract, visible at the call site |
+
+### 30.3 Header hygiene checklist
+
+- Include guard or `#pragma once`.
+- Includes only what the *declarations* need (not what the .c file needs).
+- No `using`-style typedef pollution beyond your prefix.
+- No non-`static` global variables declared (only `extern` declarations).
+- Compiles standalone: `#include "stack.h"` as the *first* include in `stack.c` proves the header is self-sufficient.
+
+That last one is a real test. If your header needs `<stddef.h>` for `size_t` but doesn't include it, every consumer must include it before yours — and they'll only discover this by a compile error in their project, not yours.
+
+---
+
+<a id="recursion"></a>
+# Part V — Advanced and Modern
+
+## 31. Recursion, and When to Kill It
+
+### 31.1 Recursion that earns its keep
+
+Recursion is the natural expression of anything with self-similar structure: trees, directories, divide-and-conquer algorithms, parsers.
+
+```c
+#include <stdio.h>
+
+long fib(int n) {
+    if (n < 2) return n;               /* base case */
+    return fib(n - 1) + fib(n - 2);    /* recursive case */
+}
+```
+
+Every recursive function needs both a base case and progress toward it. Miss either and you get a stack overflow, not a clean error.
+
+The three shapes that matter:
+
+```c
+/* Linear — one call per level */
+int sum(const int *a, size_t n) {
+    if (n == 0) return 0;
+    return a[0] + sum(a + 1, n - 1);
+}
+
+/* Divide and conquer — two calls on halves. The good kind. */
+int max_of(const int *a, size_t n) {
+    if (n == 1) return a[0];
+    size_t mid = n / 2;
+    int l = max_of(a, mid);
+    int r = max_of(a + mid, n - mid);
+    return l > r ? l : r;
+}
+
+/* Tree recursion — structure mirrors the data */
+static void walk(const BstNode *n) {
+    if (!n) return;
+    walk(n->left);
+    visit(n);
+    walk(n->right);
+}
+```
+
+### 31.2 When recursion is the wrong tool
+
+`fib` above is the canonical bad example: it recomputes the same values exponentially, and a deep call chain risks the stack.
+
+| Problem | Recursive cost | Better |
+|---|---|---|
+| Fibonacci (naive) | O(2^n) time | Iterative loop or memoization |
+| Walking a 1M-node linked list | 1M stack frames → overflow | Iterative `while` |
+| Tree walk, depth unknown | Depth frames — fine for balanced trees | Iterative with explicit stack |
+
+### 31.3 Converting recursion to iteration with an explicit stack
+
+When the structure is recursive but the depth is unbounded, carry your own stack on the heap. Here's `bst_free` done iteratively, using a simple pointer-stack:
+
+```c
+#include <stdlib.h>
+
+void bst_free_iterative(Bst *t) {
+    /* A growable stack of node pointers. */
+    size_t cap = 64, len = 0;
+    BstNode **stack = malloc(cap * sizeof *stack);
+    if (!stack) return;
+
+    if (t->root) stack[len++] = t->root;
+
+    while (len > 0) {
+        BstNode *n = stack[--len];           /* pop */
+        if (n->left) {
+            if (len == cap) { cap *= 2; stack = realloc(stack, cap * sizeof *stack); }
+            stack[len++] = n->left;          /* push */
+        }
+        if (n->right) {
+            if (len == cap) { cap *= 2; stack = realloc(stack, cap * sizeof *stack); }
+            stack[len++] = n->right;         /* push */
+        }
+        free(n);
+    }
+
+    free(stack);
+    t->root = NULL;
+}
+```
+
+(The `realloc`-into-a-temporary guard from section 8.4 is elided above only for readability — production code should check it.)
+
+The pattern: your call stack becomes a heap data structure you control, so depth is limited by RAM, not the 1–8 MB thread stack.
+
+### 31.4 Tail calls
+
+A call is a *tail call* if it's the very last thing the function does. Some compilers optimize it into a jump, reusing the frame.
+
+```c
+/* Not tail — the + happens AFTER the recursive call returns */
+long factorial_rec(long n) { return n <= 1 ? 1 : n * factorial_rec(n - 1); }
+
+/* Tail — the recursive call is the final act; accumulator carries state */
+static long fact_go(long n, long acc) { return n <= 1 ? acc : fact_go(n - 1, n * acc); }
+long factorial(long n) { return fact_go(n, 1); }
+```
+
+> ⚠️ C does **not guarantee** tail-call optimization. GCC/Clang do it at `-O2` for simple cases; MSVC mostly doesn't. Never rely on it for correctness — if depth matters, use an explicit stack.
+
+---
+
+<a id="concurrency"></a>
+## 32. Concurrency: Threads, Races, Mutexes, Atomics
+
+C11 gave the language a real, portable memory model and threading library in `<threads.h>` and `<stdatomic.h>`. This is the deepest water in the document; go slowly.
+
+### 32.1 Spawning a thread
+
+```c
+#include <stdio.h>
+#include <threads.h>
+
+static int worker(void *arg) {
+    const char *name = arg;
+    for (int i = 0; i < 3; i++)
+        printf("%s: %d\n", name, i);
+    return 0;
+}
+
+int main(void) {
+    thrd_t t1, t2;
+    thrd_create(&t1, worker, "alpha");
+    thrd_create(&t2, worker, "beta");
+    thrd_join(t1, NULL);
+    thrd_join(t2, NULL);
+    return 0;
+}
+```
+
+`thrd_join` blocks until the thread finishes. Without it, `main` could return and the process exit while workers are still running.
+
+### 32.2 The data race — the one bug that defines concurrent C
+
+Two threads touch the same memory, at least one writes, and there's no synchronization. That is **undefined behavior** — not "wrong value," but *undefined*.
+
+```c
+#include <stdio.h>
+#include <threads.h>
+
+static long counter = 0;              /* shared, unsynchronized — the bug */
+
+static int worker(void *arg) {
+    (void)arg;
+    for (long i = 0; i < 1000000; i++)
+        counter++;                    /* read-modify-write, NOT atomic */
+    return 0;
+}
+
+int main(void) {
+    enum { N = 4 };
+    thrd_t t[N];
+    for (int i = 0; i < N; i++) thrd_create(&t[i], worker, NULL);
+    for (int i = 0; i < N; i++) thrd_join(t[i], NULL);
+    printf("expected %d, got %ld\n", N * 1000000, counter);   /* always less */
+    return 0;
+}
+```
+
+`counter++` compiles to load-increment-store. Two threads interleave and increments get lost. The result is a number below 4,000,000 that changes every run.
+
+### 32.3 Fixing it with a mutex
+
+A mutex serializes access: only one thread holds it at a time.
+
+```c
+#include <threads.h>
+
+static long   counter = 0;
+static mtx_t  lock;
+
+static int worker(void *arg) {
+    (void)arg;
+    for (long i = 0; i < 1000000; i++) {
+        mtx_lock(&lock);
+        counter++;
+        mtx_unlock(&lock);
+    }
+    return 0;
+}
+
+int main(void) {
+    enum { N = 4 };
+    thrd_t t[N];
+    mtx_init(&lock, mtx_plain);
+    for (int i = 0; i < N; i++) thrd_create(&t[i], worker, NULL);
+    for (int i = 0; i < N; i++) thrd_join(t[i], NULL);
+    mtx_destroy(&lock);
+    printf("%ld\n", counter);          /* exactly 4000000 */
+    return 0;
+}
+```
+
+> 🔑 **Every shared, mutable variable needs a synchronization story.** The mutex must guard *every* access, read or write, or the race is still there. Locking the writes but not the reads is a classic half-fix that still has UB.
+
+### 32.4 Fixing it with atomics
+
+When the shared state is a single scalar, an atomic is simpler and far faster than a mutex.
+
+```c
+#include <stdatomic.h>
+#include <threads.h>
+#include <stdio.h>
+
+static atomic_long counter = 0;
+
+static int worker(void *arg) {
+    (void)arg;
+    for (long i = 0; i < 1000000; i++)
+        atomic_fetch_add(&counter, 1);      /* indivisible */
+    return 0;
+}
+
+int main(void) {
+    enum { N = 4 };
+    thrd_t t[N];
+    for (int i = 0; i < N; i++) thrd_create(&t[i], worker, NULL);
+    for (int i = 0; i < N; i++) thrd_join(t[i], NULL);
+    printf("%ld\n", atomic_load(&counter));  /* exactly 4000000 */
+    return 0;
+}
+```
+
+`atomic_fetch_add` is a single hardware instruction. No lock, no interleaving.
+
+### 32.5 The rules that keep you alive
+
+1. **Share as little as possible.** Threads that don't share mutable state can't race. Prefer passing results through `thrd_join`'s return or message queues.
+2. **One lock per logical invariant, not per variable.** If `a` and `b` must stay consistent with each other, one mutex guards both.
+3. **Hold locks for the shortest time.** Don't do I/O or call unknown code while holding a lock.
+4. **Lock ordering prevents deadlock.** If two locks are ever held together, always acquire them in the same global order everywhere.
+5. **`volatile` is not synchronization.** It only forces reloads; it provides no atomicity or ordering. Use `_Atomic` / `<stdatomic.h>`.
+6. **Condition variables for waiting.** When a thread must wait for a condition (a queue becoming non-empty), use `cnd_wait`/`cnd_signal` from `<threads.h>` — don't spin in a loop checking a flag.
+
+### 32.6 Detecting races
+
+GCC/Clang's ThreadSanitizer instruments memory accesses and reports races precisely:
+
+```bash
+gcc -fsanitize=thread -g main.c -o main -pthread
+./main
+```
+
+Note TSan conflicts with ASan — build separate sanitizer binaries. A clean TSan run on a workload that exercises all threads is strong evidence of race-freedom; it is not proof.
+
+---
+
+<a id="standards"></a>
+## 33. C89 → C23: What Changed and What to Use
+
+C evolves slowly and deliberately. Know the landmarks so you can read old code and write modern code deliberately.
+
+| Standard | Year | Landmarks |
+|---|---|---|
+| **C89/C90** | 1989 | The original ANSI standard. Declarations at block start. No `//` comments. No `long long`, no `stdint.h`, no `bool`. |
+| **C99** | 1999 | `//` comments, mixed declarations and code, `long long`, `<stdint.h>`, `<stdbool.h>`, designated initializers, VLAs, `restrict`, `//`-style, compound literals. |
+| **C11** | 2011 | `_Static_assert`, `<threads.h>`, `<stdatomic.h>`, `_Generic`, anonymous structs/unions, `_Alignas`/`alignof`. Made VLAs optional. |
+| **C17/C18** | 2018 | Bug-fix release. No new features. The safe modern baseline. |
+| **C23** | 2024 | `bool`/`true`/`false` as keywords, `nullptr`, `0b` literals, `%b` in printf, `<stdbit.h>`, `<stdckdint.h>`, `static_assert` without underscore, `[[attributes]]`. |
+
+### 33.1 What to actually use
+
+**Write C17 as your baseline** (`-std=c17`). It's universally supported by current GCC, Clang, and MSVC, and gives you everything from C99 and C11.
+
+Reach for specific newer features when your compiler supports them:
+
+- **`_Static_assert`** (C11) for compile-time checks. Zero cost, high value.
+- **Atomics and `<threads.h>`** (C11) when you genuinely need threads.
+- **`_Generic`** (C11) for type-generic macros — but sparingly; it can obscure more than it clarifies.
+- **Designated initializers** (C99) always. `.field = value` is clearer and more robust to struct reordering than positional.
+
+Features to treat with caution:
+
+- **VLAs** (C99, optional since C11) — unsupported by MSVC; avoid for portable code.
+- **Anonymous unions in structs** (C11) — handy for tagged unions, but check MSVC version support.
+
+### 33.2 Checking the standard at compile time
+
+```c
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+  #error "This code requires C11 or later"
+#endif
+```
+
+---
+
+<a id="style"></a>
+## 34. Style Guide
+
+Style is the set of decisions you make once so you never have to think about them again. This is a coherent, defensible set — adapt it, but be consistent.
+
+### 34.1 Naming
+
+| Thing | Convention | Example |
+|---|---|---|
+| Functions, variables | `snake_case` | `vec_push`, `line_count` |
+| Struct/enum types | `PascalCase` | `Vec`, `HtEntry` |
+| Macros, enum constants | `SCREAMING_SNAKE` | `MAX_SIZE`, `ERR_IO` |
+| Module prefix | `module_` | `ht_set`, `stack_pop` |
+| Boolean-ish | `is_`, `has_`, `can_` | `is_valid`, `has_next` |
+
+### 34.2 Formatting
+
+- 4-space indent, no tabs (tabs render differently everywhere).
+- Brace on the same line for functions and control blocks (K&R), or Allman if your codebase already uses it. **Consistency beats preference.**
+- Pointer `*` binds to the variable, not the type: `int *p`, not `int* p`. Reason: `int* p, q;` declares `q` as a plain `int` — the C grammar attaches `*` to the declarator.
+
+### 34.3 Structure
+
+- One logical module per `.c`/`.h` pair.
+- Functions under ~40 lines where possible; extract helpers when they grow.
+- Declare variables at first use, in the tightest scope (C99 allows it; it reduces the window for bugs).
+- Initialize at declaration. `int x = 0;` not `int x;`.
+- Early returns for error cases; the happy path stays un-indented.
+
+### 34.4 Comments
+
+- Comment **why**, not **what**. The code says what.
+- Document the contract at the function declaration in the header: params, return, ownership, error cases.
+- `/* TODO: ... */` and `/* FIXME: ... */` markers so they're greppable.
+
+```c
+/* Binary-search a sorted array.
+ * Returns the index of `key`, or -1 if absent.
+ * `arr` must be sorted ascending and contain `n` elements. */
+long bin_search(const int *arr, size_t n, int key);
+```
+
+### 34.5 What a linter-friendly file looks like
+
+Compiles clean under `-std=c17 -Wall -Wextra -Wpedantic -Werror` with no warnings, no casts unless justified in a comment, no unused parameters (mark deliberate ones `(void)param;`).
+
+---
+
+<a id="roadmap"></a>
+# Part VI — Reference
+
+## 35. Learning Roadmap with Projects
+
+A path from zero to writing C you're not ashamed of. Each project exercises specific sections.
+
+### Stage 1 — Foundations (sections 1–6)
+**Project: a unit-converter CLI.** Parse `argv`, convert km↔mi, kg↔lb. Uses: toolchain, flags, multi-file build, argc/argv, `strtol`.
+
+### Stage 2 — Core language (7–13)
+**Project: a word-frequency counter.** Read a file, count words, print sorted by frequency. Uses: pointers, arrays, structs, strings, `qsort` with a comparator, integer care.
+
+### Stage 3 — Correctness (14–16)
+**Project: a tiny expression evaluator** (`3 + 4 * 2`). Uses: floats, parsing, UB discipline — run under ASan/UBSan from day one.
+
+### Stage 4 — Engineering (17–23)
+**Project: a JSON-ish config parser** with full tests, a Makefile, and valgrind-clean output. Uses: testing, error handling, cleanup ladders, portability.
+
+### Stage 5 — Data structures (24–30)
+**Project: a spell-checker.** Load a dictionary into a hash table, check a document, suggest corrections. Uses: hash table, dynamic array, generic code, opaque API.
+
+### Stage 6 — Advanced (31–33)
+**Project: a multi-threaded file indexer.** Worker threads hash files concurrently with a shared atomic counter and a mutex-protected results table. Uses: recursion, threads, atomics, mutexes, TSan validation.
+
+---
+
+<a id="cheatsheets"></a>
+## 36. Cheat Sheets
+
+### Format specifiers
+
+| Spec | Type | Spec | Type |
+|---|---|---|---|
+| `%d` | `int` | `%u` | `unsigned int` |
+| `%ld` / `%lu` | `long` / `unsigned long` | `%lld` / `%llu` | `long long` / `unsigned long long` |
+| `%zu` | `size_t` | `%td` | `ptrdiff_t` |
+| `%f` | `double` (and promoted `float`) | `%e` / `%g` | scientific / shortest |
+| `%c` | `int` (a char) | `%s` | `char *` (string) |
+| `%p` | `void *` (address) | `%x` / `%o` | hex / octal |
+| `%%` | a literal `%` | `%b` | binary (C23) |
+
+### Operator precedence (high → low, the ones that bite)
+
+| Level | Operators | Gotcha |
+|---|---|---|
+| 1 | `()` `[]` `->` `.` `!` `~` `++` `--` `*` (deref) `&` (addr) `sizeof` | unary binds tight |
+| 2 | `*` `/` `%` | |
+| 3 | `+` `-` | |
+| 4 | `<<` `>>` | **`1 << 2 + 1` is `1 << 3`, not `(1<<2)+1`** |
+| 5 | `<` `<=` `>` `>=` | |
+| 6 | `==` `!=` | **`a & b == c` is `a & (b == c)`** — always parenthesize `&` in tests |
+| 7 | `&` `^` `\|` | |
+| 8 | `&&` `\|\|` | short-circuit |
+| 9 | `?:` `=` `+=` etc. | assignment binds loosest |
+
+**When in doubt, parenthesize.** It costs nothing and kills the entire class of precedence bugs.
+
+### The allocation pattern
+
+```c
+T *p = malloc(count * sizeof *p);       /* or calloc(count, sizeof *p) */
+if (!p) { /* handle */ }
+/* ... use ... */
+free(p);
+p = NULL;
+```
+
+### The four questions to ask of any pointer
+
+1. Does it point at valid memory right now?
+2. Who owns it — who is responsible for `free`?
+3. How long does the pointee live?
+4. Can it be NULL here?
+
+---
+
+<a id="glossary"></a>
+## 37. Glossary
+
+**ABI** — Application Binary Interface: how compiled code lays out structs, passes arguments, and names symbols. Why a library compiled with one compiler may not link with another's output.
+
+**Amortized O(1)** — an operation that is occasionally expensive (a vector's reallocation) but cheap *on average* over many operations.
+
+**Translation unit** — one `.c` file plus everything it `#include`s, after preprocessing. The unit the compiler sees.
+
+**Undefined behavior** — code for which the C standard imposes *no* requirements. The compiler may assume it never happens. See section 16.
+
+**Unspecified behavior** — the standard allows several outcomes; the compiler picks one and needn't document it (e.g. argument evaluation order).
+
+**Implementation-defined behavior** — the standard allows several outcomes and the compiler *must* document its choice (e.g. `sizeof(int)`).
+
+**Dangling pointer** — a pointer whose target has been freed or gone out of scope.
+
+**Opaque type** — a struct whose definition is hidden from callers (only a forward declaration in the header), forcing access through functions.
+
+**Strict aliasing** — the rule that an object may only be accessed through a pointer of a compatible type (with narrow exceptions like `char *`). Violating it is UB.
+
+**Sequence point / sequencing** — the ordering guarantees between side effects. Unsequenced modification and read of the same variable is UB.
+
+**Type punning** — reinterpreting the bytes of one type as another. The legal way is `memcpy`; the pointer-cast way violates strict aliasing.
+
+**Load factor** — in a hash table, entries ÷ buckets. Kept below ~0.75 by growing.
+
+**Memory model** — the rules governing how threads observe each other's memory accesses. C11 formalized C's.
+
+**Sentinel** — a special value that marks a boundary or an error, like `'\0'` ending a string or `NULL` from `malloc`.
+
+**CSPRNG** — Cryptographically Secure Pseudo-Random Number Generator. The OS-provided source you must use for security tokens, unlike `rand()`.
+
+---
+
+*End of the manual. If you can build every project in the roadmap clean under `-Wall -Wextra -Werror` with sanitizers on, you write better C than most people who do it for a living.*
