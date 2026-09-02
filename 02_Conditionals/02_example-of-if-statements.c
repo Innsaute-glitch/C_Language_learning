@@ -6,10 +6,10 @@ int main(void){
     if(5)
         printf("This works!");
     if(3.2937)
-        printf("Yup, this works too!");
-    if('hi')
-        printf("Satisfied now?");
+        printf("\nYup, this works too!");
+    if(-3)
+        printf("\nSatisfied now?");
     if(true)
-        printf("And ofc.. This works too!");
+        printf("\nAnd ofc.. This works too!");
     return 0;
 }
